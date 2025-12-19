@@ -13,7 +13,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function loadActivities() {
     try {
-      const res = await fetch("/activities");
+      // Prevent cached responses so UI reflects latest changes immediately
+      const res = await fetch(`/activities?_=${Date.now()}`, { cache: "no-store" });
       const activities = await res.json();
       renderActivities(activities);
       populateSelect(Object.keys(activities));
@@ -60,8 +61,48 @@ document.addEventListener("DOMContentLoaded", () => {
       return `<li class="no-participants">No participants yet</li>`;
     }
     return list
-      .map(email => `<li class="participant-item">${escapeHtml(email)}</li>`)
+      .map(email => `
+        <li class="participant-item">
+          <span class="participant-email">${escapeHtml(email)}</span>
+          <button class="remove-participant" data-email="${escapeHtml(email)}" aria-label="Remove ${escapeHtml(email)}">&times;</button>
+        </li>`)
       .join("");
+  }
+
+  // Append a participant to the activity card in the DOM (optimistic UI update)
+  function appendParticipantToActivityCard(activityName, email) {
+    const cards = Array.from(document.querySelectorAll('.activity-card'));
+    const card = cards.find(c => c.getAttribute('data-activity-name') === activityName);
+    if (!card) return;
+
+    const list = card.querySelector('.participants-list');
+    if (!list) return;
+
+    // If there was the 'No participants yet' placeholder, remove it
+    const placeholder = list.querySelector('.no-participants');
+    if (placeholder) placeholder.remove();
+
+    // Create participant list item
+    const li = document.createElement('li');
+    li.className = 'participant-item';
+    li.innerHTML = `
+      <span class="participant-email">${escapeHtml(email)}</span>
+      <button class="remove-participant" data-email="${escapeHtml(email)}" aria-label="Remove ${escapeHtml(email)}">&times;</button>
+    `;
+    list.appendChild(li);
+
+    // Update spots count (increment the current number)
+    const spots = card.querySelector('.spots');
+    if (spots) {
+      // Extract numbers like "Participants: X / Y"
+      const text = spots.textContent || '';
+      const m = text.match(/(Participants:)?\s*(\d+)\s*\/\s*(\d+)/i);
+      if (m) {
+        const current = parseInt(m[2], 10);
+        const max = m[3];
+        spots.innerHTML = `<strong>Participants:</strong> ${current + 1} / ${max}`;
+      }
+    }
   }
 
   async function submitSignup(event) {
@@ -82,6 +123,9 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       showMessage("success", `Signed up ${email} for ${activity}`);
       signupForm.reset();
+
+      // Optimistically update the UI immediately and then refresh to ensure consistency
+      appendParticipantToActivityCard(activity, email);
       await loadActivities(); // refresh participants lists
     } catch (err) {
       showMessage("error", err.message || "Signup failed");
@@ -97,6 +141,31 @@ document.addEventListener("DOMContentLoaded", () => {
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
   }
+
+  // Delegate remove-participant button clicks from the activities list
+  activitiesList.addEventListener("click", async (e) => {
+    if (!e.target.matches || !e.target.matches('.remove-participant')) return;
+    const btn = e.target;
+    const email = btn.dataset.email;
+    const card = btn.closest('.activity-card');
+    const activity = card && card.getAttribute('data-activity-name');
+    if (!activity || !email) return;
+    // Simple confirmation to prevent accidental removals
+    if (!confirm(`Unregister ${email} from ${activity}?`)) return;
+
+    try {
+      const url = `/activities/${encodeURIComponent(activity)}/participants?email=${encodeURIComponent(email)}`;
+      const res = await fetch(url, { method: "DELETE" });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Unregister failed");
+      }
+      showMessage("success", `Unregistered ${email} from ${activity}`);
+      await loadActivities(); // refresh participants lists
+    } catch (err) {
+      showMessage("error", err.message || "Unregister failed");
+    }
+  });
 
   signupForm.addEventListener("submit", submitSignup);
   loadActivities();
